@@ -7,22 +7,27 @@ function setBroadcast(fn) { broadcastFn = fn; }
 
 router.post('/submit', async (req, res) => {
     try {
-        const { user_id, username, time_ms, mode } = req.body;
+        const { user_id, username, streak, mode } = req.body;
 
-        if (!user_id || !username || !time_ms || mode !== 'rank') {
+        if (!user_id || !username || streak === undefined || mode !== 'rank') {
             return res.json({ success: true, ranked: false });
         }
 
-        if (time_ms < 1000) {
-            return res.status(400).json({ error: 'invalid_time' });
+        if (streak < 0) {
+            return res.status(400).json({ error: 'invalid_streak' });
         }
 
         const key = getTodayKey();
-        await redis.zadd(key, time_ms, user_id);
+
+        const current = await redis.zscore(key, user_id);
+        if (current === null || streak > parseInt(current)) {
+            await redis.zadd(key, streak, user_id);
+        }
+
         await redis.hset(`user_meta:${user_id}`, 'username', username);
         await redis.expire(key, 60 * 60 * 26);
 
-        const rank = await redis.zrank(key, user_id);
+        const rank = await redis.zrevrank(key, user_id);
         const top10 = await getTop10();
         if (broadcastFn) broadcastFn(top10);
 
@@ -35,13 +40,13 @@ router.post('/submit', async (req, res) => {
 
 async function getTop10() {
     const key = getTodayKey();
-    const raw = await redis.zrange(key, 0, 9, 'WITHSCORES');
+    const raw = await redis.zrevrange(key, 0, 9, 'WITHSCORES');
     const result = [];
     for (let i = 0; i < raw.length; i += 2) {
         const user_id = raw[i];
         const score = raw[i + 1];
         const username = await redis.hget(`user_meta:${user_id}`, 'username');
-        result.push({ rank: i / 2 + 1, user_id, username, time_ms: parseInt(score) });
+        result.push({ rank: i / 2 + 1, user_id, username, streak: parseInt(score) });
     }
     return result;
 }
